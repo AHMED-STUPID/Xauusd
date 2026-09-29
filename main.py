@@ -23,16 +23,13 @@ from telegram.ext import Application, CommandHandler
 BASE = Path(__file__).resolve().parent
 WEB = BASE / "web"
 
-# Render Secret File
-# If /etc/secrets/.env exists, load it first.
-load_dotenv("/etc/secrets/.env", override=True)
+# =========================================================
+# RENDER ENVIRONMENT VARIABLES
+# =========================================================
 
-# Also support local .env
-load_dotenv(BASE / ".env", override=False)
+# No Render Secret File is required.
+# Render Environment Variables are used directly.
 
-
-# IMPORTANT:
-# These are VARIABLE NAMES, not the actual API keys.
 TOKEN = os.getenv("8801392935:AAHIXtFyRvWg8Go-o44vn9xakQnuYd4od2I", "").strip()
 KEY = os.getenv("15b2d4c3a23143aea61106fd5c6dd27a", "").strip()
 NEWS = os.getenv("d980775201f34edfab010ce8aff2c299", "").strip()
@@ -802,18 +799,16 @@ async def main():
 
     # Check required environment variables.
     if not TOKEN:
+    raise RuntimeError(
+        "TELEGRAM_BOT_TOKEN is missing. "
+        "Add TELEGRAM_BOT_TOKEN in Render Environment Variables."
+    )
 
-        raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN is missing. "
-            "Check Render Secret File: /etc/secrets/.env"
-        )
-
-    if not KEY:
-
-        raise RuntimeError(
-            "MARKET_DATA_API_KEY is missing. "
-            "Check Render Secret File: /etc/secrets/.env"
-        )
+if not KEY:
+    raise RuntimeError(
+        "MARKET_DATA_API_KEY is missing. "
+        "Add MARKET_DATA_API_KEY in Render Environment Variables."
+    )
 
     if not WEB.exists():
 
