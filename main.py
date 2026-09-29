@@ -10,9 +10,9 @@ load_dotenv()
 BASE=Path(__file__).resolve().parent
 WEB=BASE/'web'
 
-TOKEN=os.getenv('TELEGRAM_BOT_TOKEN','').strip()
-KEY=os.getenv('MARKET_DATA_API_KEY','').strip()
-NEWS=os.getenv('NEWS_API_KEY','').strip()
+TOKEN=os.getenv('8801392935:AAHIXtFyRvWg8Go-o44vn9xakQnuYd4od2I','').strip()
+KEY=os.getenv('15b2d4c3a23143aea61106fd5c6dd27a','').strip()
+NEWS=os.getenv('d980775201f34edfab010ce8aff2c299','').strip()
 
 SYMBOL=os.getenv('SYMBOL','XAU/USD')
 INTERVAL=os.getenv('INTERVAL','5min')
