@@ -6,8 +6,19 @@ from aiohttp import web
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application,CommandHandler
-load_dotenv(); BASE=Path(__file__).resolve().parent; WEB=BASE/'web'
-TOKEN=os.getenv('8801392935:AAHIXtFyRvWg8Go-o44vn9xakQnuYd4od2I','').strip(); KEY=os.getenv('15b2d4c3a23143aea61106fd5c6dd27a','').strip(); NEWS=os.getenv('d980775201f34edfab010ce8aff2c299','').strip(); SYMBOL=os.getenv('SYMBOL','XAU/USD'); INTERVAL=os.getenv('INTERVAL','5min'); PORT=int(os.getenv('PORT','8080')); AUTO=os.getenv('AUTO_MONITOR','true').lower() in ('1','true','yes','on'); CHECK=max(15,int(os.getenv('CHECK_INTERVAL_SECONDS','60')))
+load_dotenv()
+BASE=Path(__file__).resolve().parent
+WEB=BASE/'web'
+
+TOKEN=os.getenv('TELEGRAM_BOT_TOKEN','').strip()
+KEY=os.getenv('MARKET_DATA_API_KEY','').strip()
+NEWS=os.getenv('NEWS_API_KEY','').strip()
+
+SYMBOL=os.getenv('SYMBOL','XAU/USD')
+INTERVAL=os.getenv('INTERVAL','5min')
+PORT=int(os.getenv('PORT','8080'))
+AUTO=os.getenv('AUTO_MONITOR','true').lower() in ('1','true','yes','on')
+CHECK=max(15,int(os.getenv('CHECK_INTERVAL_SECONDS','60'))) SYMBOL=os.getenv('SYMBOL','XAU/USD'); INTERVAL=os.getenv('INTERVAL','5min'); PORT=int(os.getenv('PORT','8080')); AUTO=os.getenv('AUTO_MONITOR','true').lower() in ('1','true','yes','on'); CHECK=max(15,int(os.getenv('CHECK_INTERVAL_SECONDS','60')))
 subs=set(); history=[]; last_key=''; bot_app=None; monitor_task=None; log=logging.getLogger('xau'); logging.basicConfig(level=logging.INFO,format='%(asctime)s | %(levelname)s | %(message)s')
 async def req(url,params):
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
