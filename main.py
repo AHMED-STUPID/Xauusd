@@ -1,130 +1,952 @@
-import os,asyncio,hmac,hashlib,json,time,logging
+import os
+import asyncio
+import hmac
+import hashlib
+import json
+import time
+import logging
 from pathlib import Path
 from urllib.parse import parse_qsl
+
 import aiohttp
 from aiohttp import web
 from dotenv import load_dotenv
+
 from telegram import Update
-from telegram.ext import Application,CommandHandler
-load_dotenv()
-BASE=Path(__file__).resolve().parent
-WEB=BASE/'web'
+from telegram.ext import Application, CommandHandler
 
-TOKEN=os.getenv('8801392935:AAHIXtFyRvWg8Go-o44vn9xakQnuYd4od2I','').strip()
-KEY=os.getenv('15b2d4c3a23143aea61106fd5c6dd27a','').strip()
-NEWS=os.getenv('d980775201f34edfab010ce8aff2c299','').strip()
 
-SYMBOL=os.getenv('SYMBOL','XAU/USD')
-INTERVAL=os.getenv('INTERVAL','5min')
-PORT=int(os.getenv('PORT','8080'))
-AUTO=os.getenv('AUTO_MONITOR','true').lower() in ('1','true','yes','on')
-CHECK=max(15,int(os.getenv('CHECK_INTERVAL_SECONDS','60'))) SYMBOL=os.getenv('SYMBOL','XAU/USD'); INTERVAL=os.getenv('INTERVAL','5min'); PORT=int(os.getenv('PORT','8080')); AUTO=os.getenv('AUTO_MONITOR','true').lower() in ('1','true','yes','on'); CHECK=max(15,int(os.getenv('CHECK_INTERVAL_SECONDS','60')))
-subs=set(); history=[]; last_key=''; bot_app=None; monitor_task=None; log=logging.getLogger('xau'); logging.basicConfig(level=logging.INFO,format='%(asctime)s | %(levelname)s | %(message)s')
-async def req(url,params):
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
-        async with s.get(url,params=params) as r:return r.status,await r.json(content_type=None)
+# =========================================================
+# PATHS + ENVIRONMENT
+# =========================================================
+
+BASE = Path(__file__).resolve().parent
+WEB = BASE / "web"
+
+# Render Secret File
+# If /etc/secrets/.env exists, load it first.
+load_dotenv("/etc/secrets/.env", override=True)
+
+# Also support local .env
+load_dotenv(BASE / ".env", override=False)
+
+
+# IMPORTANT:
+# These are VARIABLE NAMES, not the actual API keys.
+TOKEN = os.getenv("8801392935:AAHIXtFyRvWg8Go-o44vn9xakQnuYd4od2I", "").strip()
+KEY = os.getenv("15b2d4c3a23143aea61106fd5c6dd27a", "").strip()
+NEWS = os.getenv("d980775201f34edfab010ce8aff2c299", "").strip()
+
+SYMBOL = os.getenv("SYMBOL", "XAU/USD")
+INTERVAL = os.getenv("INTERVAL", "5min")
+
+# Render normally provides PORT automatically.
+PORT = int(os.getenv("PORT", "10000"))
+
+AUTO = os.getenv(
+    "AUTO_MONITOR",
+    "true"
+).lower() in ("1", "true", "yes", "on")
+
+CHECK = max(
+    15,
+    int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))
+)
+
+
+# =========================================================
+# GLOBALS
+# =========================================================
+
+subs = set()
+history = []
+last_key = ""
+bot_app = None
+monitor_task = None
+
+log = logging.getLogger("xau")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+
+# =========================================================
+# HTTP REQUEST
+# =========================================================
+
+async def req(url, params):
+    timeout = aiohttp.ClientTimeout(total=20)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params=params) as response:
+            return response.status, await response.json(
+                content_type=None
+            )
+
+
+# =========================================================
+# TWELVE DATA - PRICE
+# =========================================================
+
 async def price():
-    st,d=await req('https://api.twelvedata.com/price',{'symbol':SYMBOL,'apikey':KEY});
-    if st!=200 or 'price' not in d:raise RuntimeError(str(d))
-    return float(d['price'])
+
+    status, data = await req(
+        "https://api.twelvedata.com/price",
+        {
+            "symbol": SYMBOL,
+            "apikey": KEY
+        }
+    )
+
+    if status != 200 or "price" not in data:
+        raise RuntimeError(str(data))
+
+    return float(data["price"])
+
+
+# =========================================================
+# TWELVE DATA - CANDLES
+# =========================================================
+
 async def candles():
-    st,d=await req('https://api.twelvedata.com/time_series',{'symbol':SYMBOL,'interval':INTERVAL,'outputsize':100,'apikey':KEY})
-    if st!=200 or not d.get('values'):raise RuntimeError(str(d))
-    return [{'datetime':x['datetime'],'open':float(x['open']),'high':float(x['high']),'low':float(x['low']),'close':float(x['close'])} for x in reversed(d['values'])]
-def ema(v,p):
-    o=[None]*len(v)
-    if len(v)<p:return o
-    a=sum(v[:p])/p;o[p-1]=a;k=2/(p+1)
-    for i in range(p,len(v)):a=(v[i]-a)*k+a;o[i]=a
-    return o
-def rsi(v,p=14):
-    o=[None]*len(v)
-    if len(v)<=p:return o
-    g=[];l=[]
-    for i in range(1,len(v)):d=v[i]-v[i-1];g.append(max(d,0));l.append(max(-d,0))
-    ag=sum(g[:p])/p;al=sum(l[:p])/p;o[p]=100 if al==0 else 100-100/(1+ag/al)
-    for i in range(p,len(g)):ag=(ag*(p-1)+g[i])/p;al=(al*(p-1)+l[i])/p;o[i+1]=100 if al==0 else 100-100/(1+ag/al)
-    return o
-def atr(c,p=14):
-    tr=[]
-    for i,x in enumerate(c):
-        tr.append(x['high']-x['low'] if i==0 else max(x['high']-x['low'],abs(x['high']-c[i-1]['close']),abs(x['low']-c[i-1]['close'])))
-    o=[None]*len(c)
-    if len(tr)<p:return o
-    a=sum(tr[:p])/p;o[p-1]=a
-    for i in range(p,len(tr)):a=(a*(p-1)+tr[i])/p;o[i]=a
-    return o
-def analyze(c):
-    if len(c)<60:return {'signal':'NO TRADE','reason':'Need 60 candles.'}
-    v=[x['close'] for x in c];f=ema(v,9);s=ema(v,21);r=rsi(v);a=atr(c);i=len(c)-1
-    if any(x is None for x in (f[i],s[i],r[i],a[i])):return {'signal':'NO TRADE','reason':'Indicators not ready.'}
-    p=v[i];buy=p>f[i]>s[i] and 50<=r[i]<=70;sell=p<f[i]<s[i] and 30<=r[i]<=50
-    if buy:sg,reason='BUY','Bullish EMA structure with RSI confirmation.';entry=p;sl=p-a[i]*1.5;tp1=p+a[i]*1.5;tp2=p+a[i]*3
-    elif sell:sg,reason='SELL','Bearish EMA structure with RSI confirmation.';entry=p;sl=p+a[i]*1.5;tp1=p-a[i]*1.5;tp2=p-a[i]*3
-    else:sg,reason='NO TRADE','No confirmed EMA + RSI setup.';entry=sl=tp1=tp2=None
-    return {'signal':sg,'reason':reason,'time':c[i]['datetime'],'price':p,'ema_fast':f[i],'ema_slow':s[i],'rsi':r[i],'atr':a[i],'entry':entry,'sl':sl,'tp1':tp1,'tp2':tp2}
+
+    status, data = await req(
+        "https://api.twelvedata.com/time_series",
+        {
+            "symbol": SYMBOL,
+            "interval": INTERVAL,
+            "outputsize": 100,
+            "apikey": KEY
+        }
+    )
+
+    if status != 200 or not data.get("values"):
+        raise RuntimeError(str(data))
+
+    return [
+        {
+            "datetime": x["datetime"],
+            "open": float(x["open"]),
+            "high": float(x["high"]),
+            "low": float(x["low"]),
+            "close": float(x["close"])
+        }
+        for x in reversed(data["values"])
+    ]
+
+
+# =========================================================
+# EMA
+# =========================================================
+
+def ema(values, period):
+
+    result = [None] * len(values)
+
+    if len(values) < period:
+        return result
+
+    average = sum(values[:period]) / period
+    result[period - 1] = average
+
+    multiplier = 2 / (period + 1)
+
+    for i in range(period, len(values)):
+        average = (
+            (values[i] - average) * multiplier
+            + average
+        )
+
+        result[i] = average
+
+    return result
+
+
+# =========================================================
+# RSI
+# =========================================================
+
+def rsi(values, period=14):
+
+    result = [None] * len(values)
+
+    if len(values) <= period:
+        return result
+
+    gains = []
+    losses = []
+
+    for i in range(1, len(values)):
+
+        change = values[i] - values[i - 1]
+
+        gains.append(max(change, 0))
+        losses.append(max(-change, 0))
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    if avg_loss == 0:
+        result[period] = 100
+    else:
+        rs = avg_gain / avg_loss
+        result[period] = 100 - 100 / (1 + rs)
+
+    for i in range(period, len(gains)):
+
+        avg_gain = (
+            avg_gain * (period - 1) + gains[i]
+        ) / period
+
+        avg_loss = (
+            avg_loss * (period - 1) + losses[i]
+        ) / period
+
+        if avg_loss == 0:
+            result[i + 1] = 100
+        else:
+            rs = avg_gain / avg_loss
+            result[i + 1] = 100 - 100 / (1 + rs)
+
+    return result
+
+
+# =========================================================
+# ATR
+# =========================================================
+
+def atr(candles_data, period=14):
+
+    true_ranges = []
+
+    for i, candle in enumerate(candles_data):
+
+        if i == 0:
+
+            true_range = (
+                candle["high"] - candle["low"]
+            )
+
+        else:
+
+            previous_close = candles_data[i - 1]["close"]
+
+            true_range = max(
+                candle["high"] - candle["low"],
+                abs(candle["high"] - previous_close),
+                abs(candle["low"] - previous_close)
+            )
+
+        true_ranges.append(true_range)
+
+    result = [None] * len(candles_data)
+
+    if len(true_ranges) < period:
+        return result
+
+    average = sum(true_ranges[:period]) / period
+
+    result[period - 1] = average
+
+    for i in range(period, len(true_ranges)):
+
+        average = (
+            average * (period - 1)
+            + true_ranges[i]
+        ) / period
+
+        result[i] = average
+
+    return result
+
+
+# =========================================================
+# SIGNAL ENGINE
+# =========================================================
+
+def analyze(candles_data):
+
+    if len(candles_data) < 60:
+
+        return {
+            "signal": "NO TRADE",
+            "reason": "Need 60 candles."
+        }
+
+    values = [
+        candle["close"]
+        for candle in candles_data
+    ]
+
+    fast_ema = ema(values, 9)
+    slow_ema = ema(values, 21)
+    rsi_values = rsi(values, 14)
+    atr_values = atr(candles_data, 14)
+
+    i = len(candles_data) - 1
+
+    if any(
+        value is None
+        for value in (
+            fast_ema[i],
+            slow_ema[i],
+            rsi_values[i],
+            atr_values[i]
+        )
+    ):
+
+        return {
+            "signal": "NO TRADE",
+            "reason": "Indicators not ready."
+        }
+
+    current_price = values[i]
+
+    buy = (
+        current_price > fast_ema[i] > slow_ema[i]
+        and 50 <= rsi_values[i] <= 70
+    )
+
+    sell = (
+        current_price < fast_ema[i] < slow_ema[i]
+        and 30 <= rsi_values[i] <= 50
+    )
+
+    if buy:
+
+        signal = "BUY"
+        reason = (
+            "Bullish EMA structure "
+            "with RSI confirmation."
+        )
+
+        entry = current_price
+        sl = current_price - atr_values[i] * 1.5
+        tp1 = current_price + atr_values[i] * 1.5
+        tp2 = current_price + atr_values[i] * 3
+
+    elif sell:
+
+        signal = "SELL"
+        reason = (
+            "Bearish EMA structure "
+            "with RSI confirmation."
+        )
+
+        entry = current_price
+        sl = current_price + atr_values[i] * 1.5
+        tp1 = current_price - atr_values[i] * 1.5
+        tp2 = current_price - atr_values[i] * 3
+
+    else:
+
+        signal = "NO TRADE"
+        reason = "No confirmed EMA + RSI setup."
+
+        entry = None
+        sl = None
+        tp1 = None
+        tp2 = None
+
+    return {
+        "signal": signal,
+        "reason": reason,
+        "time": candles_data[i]["datetime"],
+        "price": current_price,
+        "ema_fast": fast_ema[i],
+        "ema_slow": slow_ema[i],
+        "rsi": rsi_values[i],
+        "atr": atr_values[i],
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2
+    }
+
+
+# =========================================================
+# NEWS
+# =========================================================
+
 async def headlines():
-    if not NEWS:return []
-    st,d=await req('https://newsapi.org/v2/everything',{'q':'gold OR XAU OR USD OR Federal Reserve OR inflation','language':'en','sortBy':'publishedAt','pageSize':8,'apiKey':NEWS});
-    return [{'title':a.get('title',''),'url':a.get('url','')} for a in d.get('articles',[]) if a.get('title')] if st==200 else []
+
+    if not NEWS:
+        return []
+
+    status, data = await req(
+        "https://newsapi.org/v2/everything",
+        {
+            "q": (
+                "gold OR XAU OR USD OR "
+                "Federal Reserve OR inflation"
+            ),
+            "language": "en",
+            "sortBy": "publishedAt",
+            "pageSize": 8,
+            "apiKey": NEWS
+        }
+    )
+
+    if status != 200:
+        return []
+
+    return [
+        {
+            "title": article.get("title", ""),
+            "url": article.get("url", "")
+        }
+        for article in data.get("articles", [])
+        if article.get("title")
+    ]
+
+
+# =========================================================
+# TELEGRAM MINI APP USER VALIDATION
+# =========================================================
+
 def user_from(request):
-    raw=request.headers.get('X-Telegram-Init-Data','')
-    if not raw:return None
+
+    raw = request.headers.get(
+        "X-Telegram-Init-Data",
+        ""
+    )
+
+    if not raw:
+        return None
+
     try:
-        p=dict(parse_qsl(raw,keep_blank_values=True));received=p.pop('hash',None);check='\n'.join(f'{k}={p[k]}' for k in sorted(p));secret=hmac.new(b'WebAppData',TOKEN.encode(),hashlib.sha256).digest();calc=hmac.new(secret,check.encode(),hashlib.sha256).hexdigest()
-        if not received or not hmac.compare_digest(calc,received):return None
-        if int(p.get('auth_date','0')) and time.time()-int(p['auth_date'])>86400:return None
-        return json.loads(p['user']) if p.get('user') else {}
-    except Exception:return None
-async def api_user(r):
-    u=user_from(r)
-    return web.json_response({'ok':True,'user':u}) if u is not None else web.json_response({'ok':False,'error':'Invalid Telegram init data'},status=401)
-async def api_market(r):
-    try:return web.json_response({'ok':True,'symbol':SYMBOL,'price':await price()})
-    except Exception as e:return web.json_response({'ok':False,'error':str(e)},status=502)
-async def api_signal(r):
+
+        params = dict(
+            parse_qsl(
+                raw,
+                keep_blank_values=True
+            )
+        )
+
+        received_hash = params.pop(
+            "hash",
+            None
+        )
+
+        check_string = "\n".join(
+            f"{key}={params[key]}"
+            for key in sorted(params)
+        )
+
+        secret_key = hmac.new(
+            b"WebAppData",
+            TOKEN.encode(),
+            hashlib.sha256
+        ).digest()
+
+        calculated_hash = hmac.new(
+            secret_key,
+            check_string.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        if (
+            not received_hash
+            or not hmac.compare_digest(
+                calculated_hash,
+                received_hash
+            )
+        ):
+            return None
+
+        auth_date = int(
+            params.get("auth_date", "0")
+        )
+
+        if (
+            auth_date
+            and time.time() - auth_date > 86400
+        ):
+            return None
+
+        if params.get("user"):
+
+            return json.loads(
+                params["user"]
+            )
+
+        return {}
+
+    except Exception:
+
+        return None
+
+
+# =========================================================
+# API - USER
+# =========================================================
+
+async def api_user(request):
+
+    user = user_from(request)
+
+    if user is not None:
+
+        return web.json_response({
+            "ok": True,
+            "user": user
+        })
+
+    return web.json_response(
+        {
+            "ok": False,
+            "error": "Invalid Telegram init data"
+        },
+        status=401
+    )
+
+
+# =========================================================
+# API - MARKET
+# =========================================================
+
+async def api_market(request):
+
     try:
-        x=analyze(await candles());history.append(x);del history[:-30];return web.json_response({'ok':True,'data':x})
-    except Exception as e:return web.json_response({'ok':False,'error':str(e)},status=502)
-async def api_history(r):return web.json_response({'ok':True,'items':history[-20:][::-1]})
-async def api_news(r):return web.json_response({'ok':True,'items':await headlines()})
+
+        current_price = await price()
+
+        return web.json_response({
+            "ok": True,
+            "symbol": SYMBOL,
+            "price": current_price
+        })
+
+    except Exception as error:
+
+        return web.json_response(
+            {
+                "ok": False,
+                "error": str(error)
+            },
+            status=502
+        )
+
+
+# =========================================================
+# API - SIGNAL
+# =========================================================
+
+async def api_signal(request):
+
+    try:
+
+        result = analyze(
+            await candles()
+        )
+
+        history.append(result)
+
+        del history[:-30]
+
+        return web.json_response({
+            "ok": True,
+            "data": result
+        })
+
+    except Exception as error:
+
+        return web.json_response(
+            {
+                "ok": False,
+                "error": str(error)
+            },
+            status=502
+        )
+
+
+# =========================================================
+# API - HISTORY
+# =========================================================
+
+async def api_history(request):
+
+    return web.json_response({
+        "ok": True,
+        "items": history[-20:][::-1]
+    })
+
+
+# =========================================================
+# API - NEWS
+# =========================================================
+
+async def api_news(request):
+
+    try:
+
+        news = await headlines()
+
+        return web.json_response({
+            "ok": True,
+            "items": news
+        })
+
+    except Exception as error:
+
+        return web.json_response(
+            {
+                "ok": False,
+                "error": str(error)
+            },
+            status=502
+        )
+
+
+# =========================================================
+# AUTO MONITOR
+# =========================================================
+
 async def monitor():
+
     global last_key
+
     while True:
+
         try:
-            x=analyze(await candles());k=f"{x.get('signal')}|{x.get('time')}|{x.get('price')}"
-            if x.get('signal') in ('BUY','SELL') and k!=last_key:
-                last_key=k;history.append(x);del history[:-30]
-                msg=f"🚨 XAUUSD AUTO SIGNAL\n\n{x['signal']}\nPrice: {x.get('price',0):.2f}\nEntry: {x.get('entry',0):.2f}\nSL: {x.get('sl',0):.2f}\nTP1: {x.get('tp1',0):.2f}\nTP2: {x.get('tp2',0):.2f}\n\n⚠️ Algorithmic alert only."
-                for cid in list(subs):
-                    try:await bot_app.bot.send_message(chat_id=cid,text=msg)
-                    except Exception:pass
-        except asyncio.CancelledError:raise
-        except Exception as e:log.warning('monitor: %s',e)
+
+            result = analyze(
+                await candles()
+            )
+
+            key = (
+                f"{result.get('signal')}"
+                f"|{result.get('time')}"
+                f"|{result.get('price')}"
+            )
+
+            if (
+                result.get("signal")
+                in ("BUY", "SELL")
+                and key != last_key
+            ):
+
+                last_key = key
+
+                history.append(result)
+
+                del history[:-30]
+
+                message = (
+                    "🚨 XAUUSD AUTO SIGNAL\n\n"
+                    f"{result['signal']}\n"
+                    f"Price: {result.get('price', 0):.2f}\n"
+                    f"Entry: {result.get('entry', 0):.2f}\n"
+                    f"SL: {result.get('sl', 0):.2f}\n"
+                    f"TP1: {result.get('tp1', 0):.2f}\n"
+                    f"TP2: {result.get('tp2', 0):.2f}\n\n"
+                    "⚠️ Algorithmic alert only."
+                )
+
+                for chat_id in list(subs):
+
+                    try:
+
+                        await bot_app.bot.send_message(
+                            chat_id=chat_id,
+                            text=message
+                        )
+
+                    except Exception:
+
+                        pass
+
+        except asyncio.CancelledError:
+
+            raise
+
+        except Exception as error:
+
+            log.warning(
+                "monitor: %s",
+                error
+            )
+
         await asyncio.sleep(CHECK)
+
+
+# =========================================================
+# TELEGRAM LIFECYCLE
+# =========================================================
+
 async def start(app):
+
     global monitor_task
-    if AUTO:monitor_task=asyncio.create_task(monitor())
+
+    if AUTO:
+
+        monitor_task = asyncio.create_task(
+            monitor()
+        )
+
+
 async def stop(app):
+
     global monitor_task
-    if monitor_task:monitor_task.cancel()
-async def cmd_start(u,c):
-    if u.effective_chat:subs.add(u.effective_chat.id)
-    await u.message.reply_text('🟡 XAUUSD Mini App Bot\n\nOpen the Mini App from Telegram.\n/signal - analyze\n/market - price\n/news - headlines\n/chatid - chat ID')
-async def cmd_signal(u,c):
-    try:await u.message.reply_text(json.dumps(analyze(await candles()),indent=2))
-    except Exception as e:await u.message.reply_text(f'Signal error: {e}')
-async def cmd_market(u,c):
-    try:await u.message.reply_text(f'XAU/USD: {await price():.2f}')
-    except Exception as e:await u.message.reply_text(f'Market error: {e}')
-async def cmd_news(u,c):
-    x=await headlines();await u.message.reply_text('\n'.join(f'{i+1}. {a["title"]}' for i,a in enumerate(x)) if x else 'No news available.')
-async def cmd_chatid(u,c):await u.message.reply_text(str(u.effective_chat.id))
+
+    if monitor_task:
+
+        monitor_task.cancel()
+
+        try:
+
+            await monitor_task
+
+        except asyncio.CancelledError:
+
+            pass
+
+
+# =========================================================
+# TELEGRAM COMMANDS
+# =========================================================
+
+async def cmd_start(update, context):
+
+    if update.effective_chat:
+
+        subs.add(
+            update.effective_chat.id
+        )
+
+    await update.message.reply_text(
+        "🟡 XAUUSD Mini App Bot\n\n"
+        "Open the Mini App from Telegram.\n\n"
+        "/signal - analyze\n"
+        "/market - price\n"
+        "/news - headlines\n"
+        "/chatid - chat ID"
+    )
+
+
+async def cmd_signal(update, context):
+
+    try:
+
+        result = analyze(
+            await candles()
+        )
+
+        await update.message.reply_text(
+            json.dumps(
+                result,
+                indent=2
+            )
+        )
+
+    except Exception as error:
+
+        await update.message.reply_text(
+            f"Signal error: {error}"
+        )
+
+
+async def cmd_market(update, context):
+
+    try:
+
+        current_price = await price()
+
+        await update.message.reply_text(
+            f"XAU/USD: {current_price:.2f}"
+        )
+
+    except Exception as error:
+
+        await update.message.reply_text(
+            f"Market error: {error}"
+        )
+
+
+async def cmd_news(update, context):
+
+    news = await headlines()
+
+    if news:
+
+        message = "\n".join(
+            f"{i + 1}. {article['title']}"
+            for i, article in enumerate(news)
+        )
+
+    else:
+
+        message = "No news available."
+
+    await update.message.reply_text(
+        message
+    )
+
+
+async def cmd_chatid(update, context):
+
+    await update.message.reply_text(
+        str(update.effective_chat.id)
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
 async def main():
+
     global bot_app
-    if not TOKEN or not KEY:raise RuntimeError('Set TELEGRAM_BOT_TOKEN and MARKET_DATA_API_KEY in .env')
-    bot_app=Application.builder().token(TOKEN).post_init(start).post_shutdown(stop).build()
-    for cmd,fn in [('start',cmd_start),('signal',cmd_signal),('market',cmd_market),('news',cmd_news),('chatid',cmd_chatid)]:bot_app.add_handler(CommandHandler(cmd,fn))
-    webapp=web.Application();webapp.router.add_get('/',lambda r:web.FileResponse(WEB/'index.html'));webapp.router.add_static('/static/',WEB);webapp.router.add_get('/api/user',api_user);webapp.router.add_get('/api/market',api_market);webapp.router.add_get('/api/signal',api_signal);webapp.router.add_get('/api/history',api_history);webapp.router.add_get('/api/news',api_news)
-    runner=web.AppRunner(webapp);await runner.setup();await web.TCPSite(runner,'0.0.0.0',PORT).start();await bot_app.initialize();await bot_app.start();await bot_app.updater.start_polling();await asyncio.Event().wait()
-if __name__=='__main__':asyncio.run(main())
+
+    # Check required environment variables.
+    if not TOKEN:
+
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN is missing. "
+            "Check Render Secret File: /etc/secrets/.env"
+        )
+
+    if not KEY:
+
+        raise RuntimeError(
+            "MARKET_DATA_API_KEY is missing. "
+            "Check Render Secret File: /etc/secrets/.env"
+        )
+
+    if not WEB.exists():
+
+        raise RuntimeError(
+            f"Web folder not found: {WEB}"
+        )
+
+    if not (WEB / "index.html").exists():
+
+        raise RuntimeError(
+            f"web/index.html not found: {WEB / 'index.html'}"
+        )
+
+    log.info(
+        "Starting XAUUSD Mini App..."
+    )
+
+    log.info(
+        "Symbol: %s | Interval: %s | Port: %s",
+        SYMBOL,
+        INTERVAL,
+        PORT
+    )
+
+    bot_app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(start)
+        .post_shutdown(stop)
+        .build()
+    )
+
+    commands = [
+        ("start", cmd_start),
+        ("signal", cmd_signal),
+        ("market", cmd_market),
+        ("news", cmd_news),
+        ("chatid", cmd_chatid)
+    ]
+
+    for command, handler in commands:
+
+        bot_app.add_handler(
+            CommandHandler(
+                command,
+                handler
+            )
+        )
+
+    # =====================================================
+    # WEB SERVER
+    # =====================================================
+
+    webapp = web.Application()
+
+    webapp.router.add_get(
+        "/",
+        lambda request: web.FileResponse(
+            WEB / "index.html"
+        )
+    )
+
+    webapp.router.add_static(
+        "/static/",
+        WEB
+    )
+
+    webapp.router.add_get(
+        "/api/user",
+        api_user
+    )
+
+    webapp.router.add_get(
+        "/api/market",
+        api_market
+    )
+
+    webapp.router.add_get(
+        "/api/signal",
+        api_signal
+    )
+
+    webapp.router.add_get(
+        "/api/history",
+        api_history
+    )
+
+    webapp.router.add_get(
+        "/api/news",
+        api_news
+    )
+
+    runner = web.AppRunner(
+        webapp
+    )
+
+    await runner.setup()
+
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        PORT
+    )
+
+    await site.start()
+
+    log.info(
+        "Web server started on port %s",
+        PORT
+    )
+
+    # =====================================================
+    # TELEGRAM BOT
+    # =====================================================
+
+    await bot_app.initialize()
+
+    await bot_app.start()
+
+    await bot_app.updater.start_polling()
+
+    log.info(
+        "Telegram bot started successfully."
+    )
+
+    # Keep service alive.
+    await asyncio.Event().wait()
+
+
+# =========================================================
+# ENTRY POINT
+# =========================================================
+
+if __name__ == "__main__":
+
+    asyncio.run(main())
