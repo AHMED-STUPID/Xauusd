@@ -367,8 +367,7 @@ def user_from(request):
         if not received_hash:
             return None
 
-        check_string = "
-".join(
+        check_string = "\n".join(
             f"{key}={params[key]}"
             for key in sorted(params)
         )
@@ -507,22 +506,13 @@ async def monitor():
                 add_history(result)
 
                 message = (
-                    "🚨 XAUUSD AUTO SIGNAL
-
-"
-                    f"{signal}
-"
-                    f"Price: {result.get('price', 0):.2f}
-"
-                    f"Entry: {result.get('entry', 0):.2f}
-"
-                    f"SL: {result.get('sl', 0):.2f}
-"
-                    f"TP1: {result.get('tp1', 0):.2f}
-"
-                    f"TP2: {result.get('tp2', 0):.2f}
-
-"
+                    "🚨 XAUUSD AUTO SIGNAL\n\n"
+                    f"{signal}\n"
+                    f"Price: {result.get('price', 0):.2f}\n"
+                    f"Entry: {result.get('entry', 0):.2f}\n"
+                    f"SL: {result.get('sl', 0):.2f}\n"
+                    f"TP1: {result.get('tp1', 0):.2f}\n"
+                    f"TP2: {result.get('tp2', 0):.2f}\n\n"
                     "⚠️ Algorithmic alert only."
                 )
 
@@ -581,18 +571,11 @@ async def cmd_start(update, context):
 
     if update.message:
         await update.message.reply_text(
-            "🟡 XAUUSD Mini App Bot
-
-"
-            "Open the Mini App from Telegram.
-
-"
-            "/signal - analyze
-"
-            "/market - price
-"
-            "/news - headlines
-"
+            "🟡 XAUUSD Mini App Bot\n\n"
+            "Open the Mini App from Telegram.\n\n"
+            "/signal - analyze\n"
+            "/market - price\n"
+            "/news - headlines\n"
             "/chatid - chat ID"
         )
 
@@ -631,8 +614,7 @@ async def cmd_news(update, context):
     news = await headlines()
 
     if news:
-        message = "
-".join(
+        message = "\n".join(
             f"{i + 1}. {article['title']}"
             for i, article in enumerate(news)
         )
