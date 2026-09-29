@@ -16,24 +16,77 @@ from telegram.ext import Application, CommandHandler
 BASE = Path(__file__).resolve().parent
 WEB = BASE / "web"
 
-# Local .env support; Render Environment Variables work normally.
-load_dotenv(BASE / ".env")
+# ---------------------------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------------------------
+# Load local .env first, then also support Render Secret Files.
+# Render Secret Files are commonly mounted under /etc/secrets/.
+# Real Render Environment Variables always remain available through os.environ.
+ENV_FILES = [
+    BASE / ".env",
+    Path("/etc/secrets/.env"),
+]
+for env_file in ENV_FILES:
+    if env_file.is_file():
+        load_dotenv(env_file, override=False)
 
-TOKEN = os.getenv("8801392935:AAHIXtFyRvWg8Go-o44vn9xakQnuYd4od2I", "").strip()
-KEY = os.getenv("15b2d4c3a23143aea61106fd5c6dd27a", "").strip()
-NEWS = os.getenv("d980775201f34edfab010ce8aff2c299", "").strip()
 
-SYMBOL = os.getenv("SYMBOL", "XAU/USD").strip()
-INTERVAL = os.getenv("INTERVAL", "5min").strip()
-PORT = int(os.getenv("PORT", "10000"))
+def env_first(*names, default=""):
+    """Return the first non-empty environment variable from names."""
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and value.strip():
+            return value.strip()
+    return default
 
-AUTO = os.getenv("AUTO_MONITOR", "true").strip().lower() in (
-    "1", "true", "yes", "on"
+
+# Primary names + a few harmless aliases so an existing Render setup does not
+# break just because the variable was named slightly differently.
+TOKEN = env_first(
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_TOKEN",
+    "BOT_TOKEN",
 )
-CHECK = max(15, int(os.getenv("CHECK_INTERVAL_SECONDS", "60")))
-INIT_DATA_MAX_AGE = max(
-    60, int(os.getenv("INIT_DATA_MAX_AGE_SECONDS", "86400"))
+KEY = env_first(
+    "MARKET_DATA_API_KEY",
+    "TWELVE_DATA_API_KEY",
+    "TWELVEDATA_API_KEY",
 )
+NEWS = env_first(
+    "NEWS_API_KEY",
+    "NEWSAPI_KEY",
+)
+
+SYMBOL = env_first("SYMBOL", default="XAU/USD")
+INTERVAL = env_first("INTERVAL", default="5min")
+
+try:
+    PORT = int(env_first("PORT", default="10000"))
+except ValueError:
+    PORT = 10000
+
+AUTO = env_first(
+    "AUTO_MONITOR",
+    "AUTO_SIGNAL",
+    default="true",
+).lower() in ("1", "true", "yes", "on")
+
+try:
+    CHECK = max(15, int(env_first(
+        "CHECK_INTERVAL_SECONDS",
+        "CHECK_INTERVAL",
+        default="60",
+    )))
+except ValueError:
+    CHECK = 60
+
+try:
+    INIT_DATA_MAX_AGE = max(
+        60,
+        int(env_first("INIT_DATA_MAX_AGE_SECONDS", default="86400")),
+    )
+except ValueError:
+    INIT_DATA_MAX_AGE = 86400
 
 logging.basicConfig(
     level=logging.INFO,
@@ -637,14 +690,18 @@ async def main():
 
     if not TOKEN:
         raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN is missing. "
-            "Set it in Render Environment Variables."
+            "Telegram bot token was not found. Checked "
+            "TELEGRAM_BOT_TOKEN / TELEGRAM_TOKEN / BOT_TOKEN and "
+            "local + /etc/secrets/.env files. "
+            "Add the token to this Render service's Environment Variables "
+            "or to a Secret File named .env."
         )
 
     if not KEY:
         raise RuntimeError(
-            "MARKET_DATA_API_KEY is missing. "
-            "Set it in Render Environment Variables."
+            "Market-data API key was not found. Checked "
+            "MARKET_DATA_API_KEY / TWELVE_DATA_API_KEY / TWELVEDATA_API_KEY "
+            "and local + /etc/secrets/.env files."
         )
 
     if not WEB.exists():
