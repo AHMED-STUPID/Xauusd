@@ -31,6 +31,10 @@ WEB = BASE / "web"
 TOKEN = os.getenv("8801392935:AAHIXtFyRvWg8Go-o44vn9xakQnuYd4od2I", "").strip()
 KEY = os.getenv("15b2d4c3a23143aea61106fd5c6dd27a", "").strip()
 NEWS = os.getenv("d980775201f34edfab010ce8aff2c299", "").strip()
+print("ENV CHECK:")
+print("TELEGRAM_BOT_TOKEN:", bool(TOKEN))
+print("MARKET_DATA_API_KEY:", bool(KEY))
+print("NEWS_API_KEY:", bool(NEWS))
 
 SYMBOL = os.getenv("SYMBOL", "XAU/USD")
 INTERVAL = os.getenv("INTERVAL", "5min")
